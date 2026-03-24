@@ -1,0 +1,24 @@
+# Dependencies
+server/node_modules/
+
+# Build output and logs
+server/dist/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Local environment and editor files
+.env
+.env.*
+!server/.env.example
+.DS_Store
+
+# Tor runtime state and hidden-service keys (machine-specific, sensitive)
+data/
+hidden_service/
+
+# Node runtime identity and local database state
+server/node_data/
+
+# Optional TypeScript incremental metadata
+server/*.tsbuildinfo

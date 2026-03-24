@@ -1,0 +1,26 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "test": "tsx src/test.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.24.0",
+  "dependencies": {
+    "@types/express": "^5.0.6",
+    "axios": "^1.13.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "libsodium-wrappers": "^0.8.2",
+    "socks-proxy-agent": "^8.0.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}
