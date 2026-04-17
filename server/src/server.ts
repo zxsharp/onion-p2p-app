@@ -5,7 +5,15 @@ import { SocksProxyAgent } from "socks-proxy-agent"
 import { config } from "./config"
 import { initCrypto, getIdentity, verify, openSealedBox } from "./crypto"
 import {
+  createDeliverSignaturePayload,
+  createMessageID,
+  Instruction,
+  selectRoute,
+  sendMessage,
+} from "./onion"
+import {
   hasInboundMessage,
+  getOutboundMessagePeer,
   initDatabase,
   listRecentMessages,
   markDeliveredByAck,
@@ -13,7 +21,6 @@ import {
   updateOutboundStatus,
 } from "./db"
 import { PeerManager } from "./peer"
-import { createMessageID, Instruction, selectRoute, sendMessage } from "./onion"
 
 const app = express()
 app.use(express.json())
@@ -29,12 +36,32 @@ function isLikelyNodeID(value: unknown): value is string {
   return isNonEmptyString(value) && /^[0-9a-f]{64}$/i.test(value)
 }
 
+function isLikelyOnionAddress(value: unknown): value is string {
+  return isNonEmptyString(value) && /^[a-z2-7]{16,56}\.onion$/i.test(value)
+}
+
+function computeRelayHops(
+  peers: { nodeID: string; onion: string }[],
+  destinationNodeID: string,
+  senderNodeID: string,
+  requestedRelayHops?: number
+): number {
+  if (requestedRelayHops !== undefined) {
+    return requestedRelayHops
+  }
+
+  const availableCandidates = peers.filter(
+    peer => peer.nodeID !== destinationNodeID && peer.nodeID !== senderNodeID
+  ).length
+  return Math.min(Math.max(0, config.defaultRelayHops), availableCandidates)
+}
+
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
 // Peer discovery: announce yourself and receive known peers in return
 app.post("/peer-request", (req, res) => {
   const { nodeID, onion } = req.body
-  if (!isLikelyNodeID(nodeID) || !isNonEmptyString(onion)) {
+  if (!isLikelyNodeID(nodeID) || !isLikelyOnionAddress(onion)) {
     res.status(400).json({ error: "Invalid peer announcement" })
     return
   }
@@ -64,8 +91,8 @@ app.post("/send", async (req, res) => {
     return
   }
 
-  if (relayHops !== undefined && (!Number.isInteger(relayHops) || relayHops < 1)) {
-    res.status(400).json({ error: "relayHops must be a positive integer" })
+  if (relayHops !== undefined && (!Number.isInteger(relayHops) || relayHops < 0)) {
+    res.status(400).json({ error: "relayHops must be a non-negative integer" })
     return
   }
 
@@ -87,7 +114,7 @@ app.post("/send", async (req, res) => {
     })
 
     const route = selectRoute(peers, destinationNodeID, {
-      relayHops,
+      relayHops: computeRelayHops(peers, destinationNodeID, identity.publicKey, relayHops),
       senderNodeID: identity.publicKey,
     })
 
@@ -125,6 +152,10 @@ app.post("/relay", async (req, res) => {
         res.status(400).json({ error: "Packet TTL expired" })
         return
       }
+      if (!isLikelyOnionAddress(instruction.next)) {
+        res.status(400).json({ error: "Invalid relay target" })
+        return
+      }
 
       await axios.post(
         `http://${instruction.next}/relay`,
@@ -133,13 +164,33 @@ app.post("/relay", async (req, res) => {
       )
       res.json({ ok: true })
     } else if (instruction.type === "DELIVER") {
-      const valid = verify(instruction.from, instruction.payload, instruction.signature)
+      const valid = verify(
+        instruction.from,
+        createDeliverSignaturePayload({
+          kind: instruction.kind,
+          messageID: instruction.messageID,
+          createdAt: instruction.createdAt,
+          from: instruction.from,
+          payload: instruction.payload,
+        }),
+        instruction.signature
+      )
       if (!valid) {
         res.status(400).json({ error: "Invalid signature" })
         return
       }
 
       if (instruction.kind === "ACK") {
+        const expectedPeerNodeID = getOutboundMessagePeer(instruction.payload)
+        if (!expectedPeerNodeID) {
+          res.status(404).json({ error: "Unknown acked message" })
+          return
+        }
+        if (expectedPeerNodeID !== instruction.from) {
+          res.status(400).json({ error: "Ack sender mismatch" })
+          return
+        }
+
         markDeliveredByAck(instruction.payload)
         recordMessage({
           messageID: instruction.messageID,
@@ -171,9 +222,15 @@ app.post("/relay", async (req, res) => {
       if (senderPeer) {
         try {
           const identity = getIdentity()
-          const ackRoute = selectRoute(peerManager.getAllPeers(), instruction.from, {
+          const peers = peerManager.getAllPeers()
+          const ackRelayHops = computeRelayHops(
+            peers,
+            instruction.from,
+            identity.publicKey
+          )
+          const ackRoute = selectRoute(peers, instruction.from, {
             senderNodeID: identity.publicKey,
-            relayHops: config.defaultRelayHops,
+            relayHops: ackRelayHops,
           })
 
           await sendMessage(ackRoute, instruction.messageID, identity, {
@@ -238,6 +295,11 @@ async function main() {
   )
 
   for (const bootstrapOnion of config.bootstrapOnions) {
+    if (!isLikelyOnionAddress(myOnion)) {
+      console.warn("Skipping bootstrap: local onion hostname is not available yet")
+      break
+    }
+
     try {
       await requestPeers(bootstrapOnion, myOnion)
       console.log(

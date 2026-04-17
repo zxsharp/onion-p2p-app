@@ -14,9 +14,10 @@ export class PeerManager {
   peers: Map<string, Peer> = new Map()
 
   addPeer(nodeID: string, onion: string) {
-    if (!this.peers.has(nodeID)) {
-        this.peers.set(nodeID, { nodeID, onion })
-        this.savePeers()
+    const existing = this.peers.get(nodeID)
+    if (!existing || existing.onion !== onion) {
+      this.peers.set(nodeID, { nodeID, onion })
+      this.savePeers()
     }
   }
 

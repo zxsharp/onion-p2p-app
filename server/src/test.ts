@@ -23,7 +23,7 @@ import {
   sealedBox,
   openSealedBox,
 } from "./crypto"
-import { buildOnion, selectRoute } from "./onion"
+import { buildOnion, createDeliverSignaturePayload, selectRoute } from "./onion"
 
 let passed = 0
 let failed = 0
@@ -136,7 +136,17 @@ async function run() {
   assert(layer3.payload === message,      "nodeD receives the original message")
   assert(layer3.from === sender.publicKey,"nodeD knows sender's public key")
 
-  const deliverSigValid = verify(layer3.from, layer3.payload, layer3.signature)
+  const deliverSigValid = verify(
+    layer3.from,
+    createDeliverSignaturePayload({
+      kind: layer3.kind,
+      messageID: layer3.messageID,
+      createdAt: layer3.createdAt,
+      from: layer3.from,
+      payload: layer3.payload,
+    }),
+    layer3.signature
+  )
   assert(deliverSigValid, "nodeD can verify sender's Ed25519 signature")
 
   // Confirm nodeC (intermediate) cannot verify — it never had the DELIVER layer
@@ -163,6 +173,12 @@ async function run() {
   const hasSenderInRoute = chosenRoute.some(h => h.nodeID === sender.publicKey)
   assert(!hasSenderInRoute, "selectRoute() excludes sender from relays")
 
+  const directRoute = selectRoute(allPeers, nodeD.publicKey, {
+    relayHops: 0,
+    senderNodeID: sender.publicKey,
+  })
+  assert(directRoute.length === 1, "selectRoute() supports direct destination route when relayHops is 0")
+
   let missingDestThrew = false
   try {
     selectRoute(allPeers, "f".repeat(64), { relayHops: 1, senderNodeID: sender.publicKey })
@@ -179,6 +195,14 @@ async function run() {
   }
   assert(tooManyRelaysThrew, "selectRoute() throws when relay peers are insufficient")
 
+  let negativeRelaysThrew = false
+  try {
+    selectRoute(allPeers, nodeD.publicKey, { relayHops: -1, senderNodeID: sender.publicKey })
+  } catch {
+    negativeRelaysThrew = true
+  }
+  assert(negativeRelaysThrew, "selectRoute() rejects negative relay count")
+
   let duplicateHopThrew = false
   try {
     buildOnion(
@@ -193,6 +217,14 @@ async function run() {
     duplicateHopThrew = true
   }
   assert(duplicateHopThrew, "buildOnion() rejects duplicate nodeIDs in route")
+
+  let lowTtlThrew = false
+  try {
+    buildOnion(hops, message, sender, { ttl: 1, messageID: "msg-test-low-ttl" })
+  } catch {
+    lowTtlThrew = true
+  }
+  assert(lowTtlThrew, "buildOnion() rejects ttl values that cannot cover relay depth")
 
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log(`\n── Results: ${passed} passed, ${failed} failed ─────────────────`)

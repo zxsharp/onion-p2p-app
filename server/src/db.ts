@@ -92,6 +92,22 @@ export function markDeliveredByAck(ackedMessageID: string) {
   updateOutboundStatus(ackedMessageID, "DELIVERED")
 }
 
+export function getOutboundMessagePeer(messageID: string): string | null {
+  const conn = getDB()
+  const row = conn
+    .prepare(
+      `
+      SELECT peer_node_id AS peerNodeID
+      FROM messages
+      WHERE message_id = ? AND direction = 'OUTBOUND'
+      LIMIT 1
+      `
+    )
+    .get(messageID) as { peerNodeID?: string } | undefined
+
+  return row?.peerNodeID ?? null
+}
+
 export function hasInboundMessage(messageID: string): boolean {
   const conn = getDB()
   const row = conn

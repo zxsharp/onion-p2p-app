@@ -30,6 +30,22 @@ export interface DeliverInstruction {
 
 export type Instruction = RelayInstruction | DeliverInstruction
 
+export function createDeliverSignaturePayload(input: {
+  kind: DeliverKind
+  messageID: string
+  createdAt: number
+  from: string
+  payload: string
+}): string {
+  return JSON.stringify({
+    kind: input.kind,
+    messageID: input.messageID,
+    createdAt: input.createdAt,
+    from: input.from,
+    payload: input.payload,
+  })
+}
+
 export function createMessageID(): string {
   return randomUUID()
 }
@@ -78,10 +94,10 @@ export function selectRoute(
   }
 
   const relayHops =
-    options?.relayHops ?? Math.max(1, config.defaultRelayHops)
+    options?.relayHops ?? Math.max(0, config.defaultRelayHops)
 
-  if (relayHops < 1) {
-    throw new Error("relayHops must be at least 1")
+  if (!Number.isInteger(relayHops) || relayHops < 0) {
+    throw new Error("relayHops must be a non-negative integer")
   }
 
   const candidates = peers.filter(
@@ -129,8 +145,24 @@ export function buildOnion(
 
   const messageID = options?.messageID ?? createMessageID()
   const kind: DeliverKind = options?.kind ?? "MESSAGE"
+  const relayLayers = hops.length - 1
+  if (relayLayers > 0 && ttl < relayLayers) {
+    throw new Error(
+      `ttl too low for selected route: ttl=${ttl}, required at least ${relayLayers}`
+    )
+  }
 
-  const signature = sign(sender.privateKey, message)
+  const createdAt = Date.now()
+  const signature = sign(
+    sender.privateKey,
+    createDeliverSignaturePayload({
+      kind,
+      messageID,
+      createdAt,
+      from: sender.publicKey,
+      payload: message,
+    })
+  )
 
   // Innermost layer: a signed delivery instruction for the destination
   const dest = hops[hops.length - 1]
@@ -138,7 +170,7 @@ export function buildOnion(
     type: "DELIVER",
     kind,
     messageID,
-    createdAt: Date.now(),
+    createdAt,
     from: sender.publicKey,
     payload: message,
     signature,
@@ -150,7 +182,7 @@ export function buildOnion(
     const relay: RelayInstruction = {
       type: "RELAY",
       next: hops[i + 1].onion,
-      ttl,
+      ttl: ttl - i,
       payload: encrypted,
     }
     encrypted = sealedBox(hops[i].nodeID, JSON.stringify(relay))
