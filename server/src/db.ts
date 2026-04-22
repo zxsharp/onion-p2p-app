@@ -81,11 +81,16 @@ export function updateOutboundStatus(messageID: string, status: MessageStatus) {
     .prepare(
       `
       UPDATE messages
-      SET status = ?, updated_at = ?
+      SET
+        status = CASE
+          WHEN ? = 'SENT' AND status = 'DELIVERED' THEN status
+          ELSE ?
+        END,
+        updated_at = ?
       WHERE message_id = ? AND direction = 'OUTBOUND'
       `
     )
-    .run(status, now(), messageID)
+    .run(status, status, now(), messageID)
 }
 
 export function markDeliveredByAck(ackedMessageID: string) {
