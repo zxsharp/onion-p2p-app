@@ -29,6 +29,13 @@ export class PeerManager {
     return Array.from(this.peers.values())
   }
 
+  hasOnion(onion: string) {
+    for (const peer of this.peers.values()) {
+      if (peer.onion === onion) return true
+    }
+    return false
+  }
+
   
   loadPeers() {
     if (!fs.existsSync(FILE)) return

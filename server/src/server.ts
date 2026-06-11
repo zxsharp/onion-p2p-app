@@ -3,7 +3,7 @@ import express from "express"
 import axios from "axios"
 import { SocksProxyAgent } from "socks-proxy-agent"
 import { config } from "./config"
-import { initCrypto, getIdentity, verify, openSealedBox } from "./crypto"
+import { initCrypto, getIdentity, sign, verify, openSealedBox } from "./crypto"
 import {
   createDeliverSignaturePayload,
   createMessageID,
@@ -12,6 +12,10 @@ import {
   sendMessage,
 } from "./onion"
 import {
+  enqueueAckRetryJob,
+  listDueAckRetryJobs,
+  markAckRetryJobFailure,
+  markAckRetryJobSent,
   hasInboundMessage,
   getOutboundMessagePeer,
   initDatabase,
@@ -40,6 +44,28 @@ function isLikelyOnionAddress(value: unknown): value is string {
   return isNonEmptyString(value) && /^[a-z2-7]{16,56}\.onion$/i.test(value)
 }
 
+function isFreshTimestamp(
+  createdAt: unknown,
+  maxAgeMs: number,
+  maxFutureSkewMs: number
+): createdAt is number {
+  if (!Number.isInteger(createdAt)) return false
+  const now = Date.now()
+  return now - createdAt <= maxAgeMs && createdAt - now <= maxFutureSkewMs
+}
+
+function createPeerAnnouncementPayload(input: {
+  nodeID: string
+  onion: string
+  createdAt: number
+}): string {
+  return JSON.stringify({
+    nodeID: input.nodeID,
+    onion: input.onion,
+    createdAt: input.createdAt,
+  })
+}
+
 function computeRelayHops(
   peers: { nodeID: string; onion: string }[],
   destinationNodeID: string,
@@ -60,11 +86,32 @@ function computeRelayHops(
 
 // Peer discovery: announce yourself and receive known peers in return
 app.post("/peer-request", (req, res) => {
-  const { nodeID, onion } = req.body
+  const { nodeID, onion, createdAt, signature } = req.body
   if (!isLikelyNodeID(nodeID) || !isLikelyOnionAddress(onion)) {
     res.status(400).json({ error: "Invalid peer announcement" })
     return
   }
+
+  if (!isFreshTimestamp(createdAt, config.maxPeerAnnouncementAgeMs, config.maxPacketFutureSkewMs)) {
+    res.status(400).json({ error: "Peer announcement expired" })
+    return
+  }
+
+  if (!isNonEmptyString(signature)) {
+    res.status(400).json({ error: "Missing peer announcement signature" })
+    return
+  }
+
+  const isValidAnnouncement = verify(
+    nodeID,
+    createPeerAnnouncementPayload({ nodeID, onion, createdAt }),
+    signature
+  )
+  if (!isValidAnnouncement) {
+    res.status(400).json({ error: "Invalid peer announcement signature" })
+    return
+  }
+
   peerManager.addPeer(nodeID, onion)
   res.json({ peers: peerManager.getAllPeers() })
 })
@@ -156,6 +203,10 @@ app.post("/relay", async (req, res) => {
         res.status(400).json({ error: "Invalid relay target" })
         return
       }
+      if (config.enforceKnownRelayTargets && !peerManager.hasOnion(instruction.next)) {
+        res.status(403).json({ error: "Relay target is not trusted" })
+        return
+      }
 
       await axios.post(
         `http://${instruction.next}/relay`,
@@ -177,6 +228,11 @@ app.post("/relay", async (req, res) => {
       )
       if (!valid) {
         res.status(400).json({ error: "Invalid signature" })
+        return
+      }
+
+      if (!isFreshTimestamp(instruction.createdAt, config.maxPacketAgeMs, config.maxPacketFutureSkewMs)) {
+        res.status(400).json({ error: "Packet expired" })
         return
       }
 
@@ -239,9 +295,15 @@ app.post("/relay", async (req, res) => {
           })
           console.log(`[ACK] Sent ack for message ${instruction.messageID} to ${instruction.from}`)
         } catch (ackErr) {
+          enqueueAckRetryJob(
+            instruction.messageID,
+            instruction.from,
+            ackErr instanceof Error ? ackErr.message : "Ack send failed"
+          )
           console.warn(`[ACK] Failed to send ack for ${instruction.messageID}:`, ackErr)
         }
       } else {
+        enqueueAckRetryJob(instruction.messageID, instruction.from, "Sender peer unknown")
         console.warn(`[ACK] Sender peer ${instruction.from} not known, ack skipped`)
       }
 
@@ -259,9 +321,23 @@ app.post("/relay", async (req, res) => {
 
 async function requestPeers(targetOnion: string, myOnion: string) {
   const identity = getIdentity()
+  const createdAt = Date.now()
+  const signature = sign(
+    identity.privateKey,
+    createPeerAnnouncementPayload({
+      nodeID: identity.publicKey,
+      onion: myOnion,
+      createdAt,
+    })
+  )
   const res = await axios.post(
     `http://${targetOnion}/peer-request`,
-    { nodeID: identity.publicKey, onion: myOnion },
+    {
+      nodeID: identity.publicKey,
+      onion: myOnion,
+      createdAt,
+      signature,
+    },
     { httpAgent: torAgent }
   )
   res.data.peers.forEach((p: { nodeID: string; onion: string }) =>
@@ -269,10 +345,56 @@ async function requestPeers(targetOnion: string, myOnion: string) {
   )
 }
 
+async function sendAckForMessage(messageID: string, senderNodeID: string) {
+  const identity = getIdentity()
+  const peers = peerManager.getAllPeers()
+  const ackRelayHops = computeRelayHops(peers, senderNodeID, identity.publicKey)
+  const ackRoute = selectRoute(peers, senderNodeID, {
+    senderNodeID: identity.publicKey,
+    relayHops: ackRelayHops,
+  })
+
+  await sendMessage(ackRoute, messageID, identity, {
+    kind: "ACK",
+    ttl: config.defaultPacketTtl,
+  })
+}
+
+function startAckRetryWorker() {
+  let inFlight = false
+
+  setInterval(async () => {
+    if (inFlight) return
+    inFlight = true
+    try {
+      const jobs = listDueAckRetryJobs(20)
+      for (const job of jobs) {
+        try {
+          await sendAckForMessage(job.messageID, job.senderNodeID)
+          markAckRetryJobSent(job.id)
+          console.log(`[ACK-RETRY] Sent ack for message ${job.messageID} after retry`)
+        } catch (err) {
+          markAckRetryJobFailure(
+            job.id,
+            err instanceof Error ? err.message : "Ack retry failed",
+            config.ackRetryMaxAttempts,
+            config.ackRetryBaseBackoffMs,
+            config.ackRetryMaxBackoffMs
+          )
+          console.warn(`[ACK-RETRY] Failed ack retry for ${job.messageID}:`, err)
+        }
+      }
+    } finally {
+      inFlight = false
+    }
+  }, Math.max(1000, config.ackRetryPollMs))
+}
+
 async function main() {
   await initCrypto()
   initDatabase()
   peerManager.loadPeers()
+  startAckRetryWorker()
 
   const identity = getIdentity()
   console.log("Node ID:", identity.publicKey)

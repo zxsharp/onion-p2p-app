@@ -6,6 +6,7 @@ import { config } from "./config"
 export type MessageDirection = "INBOUND" | "OUTBOUND"
 export type MessageKind = "MESSAGE" | "ACK"
 export type MessageStatus = "PENDING" | "SENT" | "FAILED" | "RECEIVED" | "DELIVERED"
+export type AckJobStatus = "PENDING" | "SENT" | "FAILED"
 
 interface RecordMessageInput {
   messageID: string
@@ -14,6 +15,14 @@ interface RecordMessageInput {
   peerNodeID: string
   payload: string
   status: MessageStatus
+}
+
+export interface AckRetryJob {
+  id: number
+  messageID: string
+  senderNodeID: string
+  attemptCount: number
+  status: AckJobStatus
 }
 
 const DB_FILE = path.join(config.dataDir, "messages.db")
@@ -48,6 +57,22 @@ function getDB() {
 
     CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
     CREATE INDEX IF NOT EXISTS idx_messages_direction ON messages(direction);
+
+    CREATE TABLE IF NOT EXISTS ack_retry_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL,
+      sender_node_id TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      next_attempt_at INTEGER NOT NULL,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(message_id, sender_node_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ack_retry_due
+      ON ack_retry_jobs(status, next_attempt_at);
   `)
 
   return db
@@ -150,4 +175,112 @@ export function listRecentMessages(limit = 50) {
       `
     )
     .all(capped)
+}
+
+export function enqueueAckRetryJob(
+  messageID: string,
+  senderNodeID: string,
+  reason: string
+) {
+  const conn = getDB()
+  const timestamp = now()
+  conn
+    .prepare(
+      `
+      INSERT INTO ack_retry_jobs
+        (message_id, sender_node_id, attempt_count, status, next_attempt_at, last_error, created_at, updated_at)
+      VALUES
+        (?, ?, 0, 'PENDING', ?, ?, ?, ?)
+      ON CONFLICT(message_id, sender_node_id) DO UPDATE SET
+        status = 'PENDING',
+        next_attempt_at = MIN(next_attempt_at, excluded.next_attempt_at),
+        last_error = excluded.last_error,
+        updated_at = excluded.updated_at
+      `
+    )
+    .run(messageID, senderNodeID, timestamp, reason, timestamp, timestamp)
+}
+
+export function listDueAckRetryJobs(limit = 20): AckRetryJob[] {
+  const conn = getDB()
+  const capped = Math.max(1, Math.min(200, limit))
+  return conn
+    .prepare(
+      `
+      SELECT
+        id,
+        message_id AS messageID,
+        sender_node_id AS senderNodeID,
+        attempt_count AS attemptCount,
+        status
+      FROM ack_retry_jobs
+      WHERE status = 'PENDING' AND next_attempt_at <= ?
+      ORDER BY next_attempt_at ASC, id ASC
+      LIMIT ?
+      `
+    )
+    .all(now(), capped) as unknown as AckRetryJob[]
+}
+
+export function markAckRetryJobSent(id: number) {
+  const conn = getDB()
+  conn
+    .prepare(
+      `
+      UPDATE ack_retry_jobs
+      SET status = 'SENT', updated_at = ?
+      WHERE id = ?
+      `
+    )
+    .run(now(), id)
+}
+
+export function markAckRetryJobFailure(
+  id: number,
+  reason: string,
+  maxAttempts: number,
+  baseBackoffMs: number,
+  maxBackoffMs: number
+) {
+  const conn = getDB()
+  const row = conn
+    .prepare(
+      `
+      SELECT attempt_count AS attemptCount
+      FROM ack_retry_jobs
+      WHERE id = ?
+      LIMIT 1
+      `
+    )
+    .get(id) as { attemptCount?: number } | undefined
+
+  const currentAttempts = row?.attemptCount ?? 0
+  const nextAttempts = currentAttempts + 1
+  const shouldFail = nextAttempts >= Math.max(1, maxAttempts)
+  const retryDelay = Math.min(
+    Math.max(1000, maxBackoffMs),
+    Math.max(500, baseBackoffMs) * Math.pow(2, Math.max(0, nextAttempts - 1))
+  )
+
+  conn
+    .prepare(
+      `
+      UPDATE ack_retry_jobs
+      SET
+        attempt_count = ?,
+        status = ?,
+        next_attempt_at = ?,
+        last_error = ?,
+        updated_at = ?
+      WHERE id = ?
+      `
+    )
+    .run(
+      nextAttempts,
+      shouldFail ? "FAILED" : "PENDING",
+      now() + retryDelay,
+      reason,
+      now(),
+      id
+    )
 }

@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/server.ts",
-    "test": "tsx src/test.ts"
+    "test:unit": "tsx src/test.ts",
+    "test:integration": "tsx src/integration.test.ts",
+    "test:tor": "tsx src/tor.e2e.test.ts",
+    "test": "pnpm run test:unit && pnpm run test:integration"
   },
   "keywords": [],
   "author": "",

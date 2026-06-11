@@ -4,6 +4,7 @@ import os from "os"
 import path from "path"
 import { spawn, spawnSync, type ChildProcess } from "child_process"
 import { SocksProxyAgent } from "socks-proxy-agent"
+import { sign } from "./crypto"
 
 type TestNode = {
   name: string
@@ -17,6 +18,7 @@ type TestNode = {
   torLogPath: string
   onion?: string
   nodeID?: string
+  privateKey?: string
   torProc?: ChildProcess
   serverProc?: ChildProcess
 }
@@ -180,6 +182,7 @@ async function startServer(node: TestNode, serverDir: string) {
       if (!fs.existsSync(identityFile)) return null
       return JSON.parse(fs.readFileSync(identityFile, "utf8")) as {
         publicKey: string
+        privateKey: string
       }
     },
     30000,
@@ -187,10 +190,19 @@ async function startServer(node: TestNode, serverDir: string) {
   )
 
   node.nodeID = identity.publicKey
+  node.privateKey = identity.privateKey
 }
 
 async function announcePeer(from: TestNode, to: TestNode, onionToAnnounce?: string) {
   const agent = new SocksProxyAgent(`socks5h://127.0.0.1:${from.socksPort}`)
+  const createdAt = Date.now()
+  const onion = onionToAnnounce ?? from.onion
+  const payload = JSON.stringify({
+    nodeID: from.nodeID,
+    onion,
+    createdAt,
+  })
+  const signature = sign(from.privateKey ?? "", payload)
   let lastError: unknown = null
   for (let attempt = 1; attempt <= 12; attempt++) {
     try {
@@ -198,7 +210,9 @@ async function announcePeer(from: TestNode, to: TestNode, onionToAnnounce?: stri
         `http://${to.onion}/peer-request`,
         {
           nodeID: from.nodeID,
-          onion: onionToAnnounce ?? from.onion,
+          onion,
+          createdAt,
+          signature,
         },
         {
           timeout: 15000,
