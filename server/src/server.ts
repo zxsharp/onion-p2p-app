@@ -121,6 +121,20 @@ app.get("/peers", (_req, res) => {
   res.json({ peers: peerManager.getAllPeers() })
 })
 
+// Local node identity
+app.get("/identity", (_req, res) => {
+  try {
+    const identity = getIdentity()
+    let myOnion = "<unknown>"
+    try {
+      myOnion = fs.readFileSync(`${config.hiddenServiceDir}/hostname`, "utf8").trim()
+    } catch { }
+    res.json({ nodeID: identity.publicKey, onion: myOnion })
+  } catch (err) {
+    res.status(500).json({ error: "Could not read identity" })
+  }
+})
+
 // Local node message history from SQLite store
 app.get("/messages", (req, res) => {
   const parsedLimit = Number.parseInt(String(req.query.limit ?? "50"), 10)
