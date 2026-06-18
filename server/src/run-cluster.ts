@@ -153,7 +153,7 @@ Log notice stdout
   })
 
   // 4. Actively Command Nodes to Announce Themselves (Exponential Backoff)
-  console.log("\n🔄 Beginning peer announcement (Tor takes 30-90s to route newly published descriptors)...")
+  console.log("\nBeginning peer announcement (Tor takes 30-90s to route newly published descriptors)...")
   
   const targetOnion = nodes[0].onion // Everyone joins Node 1
   const MAX_RETRIES = 12
@@ -177,7 +177,7 @@ Log notice stdout
           
           const data = await res.json()
           if (data.ok) {
-            console.log(`✅ [Node ${node.id}] successfully announced itself to Node 1 via Tor! (Attempt ${attempt})`)
+            console.log(`[Node ${node.id}] successfully announced itself to Node 1 via Tor! (Attempt ${attempt})`)
             return // Success, exit the retry loop
           }
         } catch (err) {
@@ -185,7 +185,7 @@ Log notice stdout
         }
         
         if (attempt === MAX_RETRIES) {
-          console.log(`❌ [Node ${node.id}] failed to announce itself after ${MAX_RETRIES} attempts. Tor descriptor may be stuck.`)
+          console.log(`[Node ${node.id}] failed to announce itself after ${MAX_RETRIES} attempts. Tor descriptor may be stuck.`)
           return
         }
         
