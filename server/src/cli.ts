@@ -1,3 +1,4 @@
+import "dotenv/config"
 import readline from "readline"
 
 const HTTP_PORT = process.env.HTTP_PORT || 3000
@@ -36,13 +37,13 @@ async function showMenu() {
 
 async function fetchIdentity() {
   const res = await fetch(`${LOCAL_DAEMON}/identity`).then(r => r.json())
-  console.log(`\n🔑 My Node ID: ${res.nodeID}`)
-  console.log(`🧅 My Onion:   ${res.onion}`)
+  console.log(`\n My Node ID: ${res.nodeID}`)
+  console.log(` My Onion:   ${res.onion}`)
 }
 
 async function fetchPeers() {
   const res = await fetch(`${LOCAL_DAEMON}/peers`).then(r => r.json())
-  console.log("\n🌐 Known Peers:")
+  console.log("\n Known Peers:")
   if (!res.peers || res.peers.length === 0) {
     console.log("   (No peers found)")
     return
@@ -54,7 +55,7 @@ async function fetchPeers() {
 
 async function fetchMessages() {
   const res = await fetch(`${LOCAL_DAEMON}/messages`).then(r => r.json())
-  console.log("\n📬 Inbox & Outbox:")
+  console.log("\n Inbox & Outbox:")
   if (!res.messages || res.messages.length === 0) {
     console.log("   (No messages found)")
     return
@@ -88,15 +89,15 @@ async function triggerSendMessage() {
         const res = await req.json()
         
         if (res.ok) {
-          console.log(`\n✅ Message dispatched!`)
+          console.log(`\n Message dispatched!`)
           console.log(`   Message ID: ${res.messageID}`)
           console.log(`   Relay Hops: ${res.relayCount}`)
         } else {
-          console.log(`\n❌ Failed: ${res.error}`)
+          console.log(`\n Failed: ${res.error}`)
         }
       } catch (err) {
         const e = err as Error
-        console.log(`\n❌ Network Error: ${e.message}`)
+        console.log(`\n Network Error: ${e.message}`)
       }
       
       setTimeout(showMenu, 500)
