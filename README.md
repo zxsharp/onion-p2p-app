@@ -87,8 +87,15 @@ From the CLI menu, you can:
 3. Check your Inbox/Outbox for `PENDING`, `SENT`, and `DELIVERED` messages.
 4. Send an encrypted message to another node by pasting their Public Key.
 
-### Connecting Multiple Nodes (Local Testing)
-To test the multi-hop routing locally, simply duplicate the entire project folder (e.g., `nodeB`, `nodeC`). 
-1. In `nodeB/server/.env` and `nodeC/server/.env`, ensure you assign different `HTTP_PORT`s (e.g., `3001`, `3002`).
-2. Add `nodeA`'s newly generated `.onion` address to the `BOOTSTRAP_ONIONS` list in their `.env` files.
-3. Launch Tor and the Daemon for all three nodes. Node B and Node C will automatically discover Node A and sync peer tables!
+### Automated Local Cluster Testing
+To easily test multi-hop routing locally without manually duplicating folders or managing `.env` files, this repository includes an orchestration script that simulates a full 4-node network on a single machine.
+
+1. In the `server` directory, execute:
+   ```bash
+   npx tsx src/run-cluster.ts
+   ```
+2. The script will automatically generate an isolated `cluster_data/` sandbox containing unique `tor_data`, `app_data`, and hidden service directories for 4 individual nodes.
+3. It spawns 4 background Tor daemons and 4 Node.js instances concurrently on separate ports.
+4. It utilizes an **exponential backoff algorithm** to command the nodes to wait for Tor descriptors to publish and actively announce themselves to the bootstrap node.
+5. Finally, it performs a **Peer Synchronization** sweep so all nodes instantly learn the full network topology.
+6. Open a new terminal and run `HTTP_PORT=3002 npx tsx src/cli.ts` (or port 3003, 3004) to access any peripheral node and securely send messages through the local Tor circuits!
