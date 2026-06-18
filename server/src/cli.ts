@@ -15,7 +15,8 @@ async function showMenu() {
   console.log("2. List Network Peers")
   console.log("3. Read Inbox")
   console.log("4. Send Message")
-  console.log("5. Exit")
+  console.log("5. Join Network (Bootstrap)")
+  console.log("6. Exit")
   
   rl.question("Select an option: ", async (answer) => {
     try {
@@ -23,13 +24,14 @@ async function showMenu() {
       else if (answer === '2') await fetchPeers()
       else if (answer === '3') await fetchMessages()
       else if (answer === '4') await triggerSendMessage()
-      else if (answer === '5') process.exit(0)
+      else if (answer === '5') await triggerJoinNetwork()
+      else if (answer === '6') process.exit(0)
     } catch (err) {
       const e = err as Error
       console.error("Error communicating with daemon:", e.message)
     }
     
-    if (answer !== '4') {
+    if (answer !== '4' && answer !== '5') {
       setTimeout(showMenu, 500)
     }
   })
@@ -102,6 +104,35 @@ async function triggerSendMessage() {
       
       setTimeout(showMenu, 500)
     })
+  })
+}
+
+async function triggerJoinNetwork() {
+  rl.question("\nEnter Bootstrap Onion Address: ", async (bootstrapOnion) => {
+    if (!bootstrapOnion) {
+      console.log("Cancelled.")
+      showMenu()
+      return
+    }
+    try {
+      const req = await fetch(`${LOCAL_DAEMON}/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bootstrapOnion })
+      })
+      const res = await req.json()
+      
+      if (res.ok) {
+        console.log(`\n Successfully joined the network!`)
+        console.log(`   Discovered ${res.peers?.length || 0} peers.`)
+      } else {
+        console.log(`\n Failed: ${res.error}`)
+      }
+    } catch (err) {
+      const e = err as Error
+      console.log(`\n Network Error: ${e.message}`)
+    }
+    setTimeout(showMenu, 500)
   })
 }
 

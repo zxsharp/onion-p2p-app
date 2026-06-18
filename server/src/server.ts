@@ -135,6 +135,32 @@ app.get("/identity", (_req, res) => {
   }
 })
 
+// Join the network manually via a bootstrap onion
+app.post("/join", async (req, res) => {
+  const { bootstrapOnion } = req.body
+  if (!isLikelyOnionAddress(bootstrapOnion)) {
+    res.status(400).json({ error: "Invalid onion address" })
+    return
+  }
+  try {
+    let myOnion = "<unknown>"
+    try {
+      myOnion = fs.readFileSync(`${config.hiddenServiceDir}/hostname`, "utf8").trim()
+    } catch { }
+    
+    if (!isLikelyOnionAddress(myOnion)) {
+      res.status(400).json({ error: "Local onion address not available yet" })
+      return
+    }
+    
+    await requestPeers(bootstrapOnion, myOnion)
+    res.json({ ok: true, peers: peerManager.getAllPeers() })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to join network"
+    res.status(500).json({ error: msg })
+  }
+})
+
 // Local node message history from SQLite store
 app.get("/messages", (req, res) => {
   const parsedLimit = Number.parseInt(String(req.query.limit ?? "50"), 10)
