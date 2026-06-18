@@ -160,11 +160,13 @@ Log notice stdout
   const INITIAL_BACKOFF_MS = 5000
   const MAX_BACKOFF_MS = 20000
 
+  const announcementPromises = []
+
   for (let i = 1; i < nodes.length; i++) {
     const node = nodes[i]
     
     // Fire and forget an async IIFE for each node
-    ;(async () => {
+    const p = (async () => {
       let backoff = INITIAL_BACKOFF_MS
       
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -178,7 +180,7 @@ Log notice stdout
           const data = await res.json()
           if (data.ok) {
             console.log(`[Node ${node.id}] successfully announced itself to Node 1 via Tor! (Attempt ${attempt})`)
-            return // Success, exit the retry loop
+            return true // Success, exit the retry loop
           }
         } catch (err) {
           // HTTP server might not be up yet, or Tor actively rejected the connection
@@ -186,7 +188,7 @@ Log notice stdout
         
         if (attempt === MAX_RETRIES) {
           console.log(`[Node ${node.id}] failed to announce itself after ${MAX_RETRIES} attempts. Tor descriptor may be stuck.`)
-          return
+          return false
         }
         
         // Sleep for 'backoff' milliseconds
@@ -195,8 +197,33 @@ Log notice stdout
         // Exponentially increase the backoff, capped at max
         backoff = Math.min(backoff * 1.5, MAX_BACKOFF_MS)
       }
+      return false
     })()
+    announcementPromises.push(p)
   }
+
+  // 5. Final Peer Synchronization
+  Promise.all(announcementPromises).then(async (results) => {
+    // If all nodes successfully joined, Node 1 now knows everyone.
+    // However, nodes 2, 3, and 4 only know Node 1. We must force them to fetch the full list again!
+    if (results.every(r => r === true)) {
+      console.log("\nPerforming final peer synchronization (pulling full directory from Node 1)...")
+      for (let i = 1; i < nodes.length; i++) {
+        const node = nodes[i]
+        try {
+          await fetch(`http://127.0.0.1:${node.httpPort}/join`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ bootstrapOnion: targetOnion })
+          })
+          console.log(`[Node ${node.id}] successfully synced full peer list!`)
+        } catch (e) {
+          console.log(`[Node ${node.id}] failed to sync final peer list.`)
+        }
+      }
+      console.log("\nCLUSTER BOOTSTRAP COMPLETE! You can now send messages between any nodes.")
+    }
+  })
 
   console.log("\nPress Ctrl+C to stop all daemons and exit.\n")
 

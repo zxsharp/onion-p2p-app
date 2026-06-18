@@ -221,7 +221,12 @@ app.post("/send", async (req, res) => {
     })
   } catch (err) {
     updateOutboundStatus(messageID, "FAILED")
-    const msg = err instanceof Error ? err.message : "Could not send message"
+    let msg = "Could not send message"
+    if (axios.isAxiosError(err) && err.response?.data?.error) {
+      msg = err.response.data.error
+    } else if (err instanceof Error) {
+      msg = err.message
+    }
     res.status(400).json({ error: msg })
   }
 })
@@ -248,11 +253,18 @@ app.post("/relay", async (req, res) => {
         return
       }
 
-      await axios.post(
-        `http://${instruction.next}/relay`,
-        { data: instruction.payload },
-        { httpAgent: torAgent }
-      )
+      try {
+        await axios.post(
+          `http://${instruction.next}/relay`,
+          { data: instruction.payload },
+          { httpAgent: torAgent }
+        )
+      } catch (relayErr) {
+        // Distinguish network/routing failures from decryption/logic failures
+        console.error(`[RELAY] Failed to forward packet to ${instruction.next}:`, relayErr instanceof Error ? relayErr.message : "Unknown error")
+        res.status(502).json({ error: "Next hop is unreachable via Tor" })
+        return
+      }
       res.json({ ok: true })
     } else if (instruction.type === "DELIVER") {
       const valid = verify(
