@@ -19,6 +19,7 @@ hidden_service/
 
 # Node runtime identity and local database state
 server/node_data/
+server/cluster_data/
 
 # Optional TypeScript incremental metadata
 server/*.tsbuildinfo
